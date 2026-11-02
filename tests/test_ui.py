@@ -21,15 +21,14 @@ import time
 from types import SimpleNamespace
 
 import pytest
-from textual.app import App, ComposeResult
-from textual.events import Key
-from textual.widgets import Input
-
 from tau_agent.messages import AssistantMessage, ToolResultMessage, UserMessage
 from tau_agent.tools import ToolCall
 from tau_coding.tui.app import _theme_css_variables
 from tau_coding.tui.config import TAU_DARK_THEME
 from tau_coding.tui.widgets import TranscriptMessageWidget
+from textual.app import App, ComposeResult
+from textual.events import Key
+from textual.widgets import Input
 
 from tau_subagents.extension import AgentRun, SubagentManager
 from tau_subagents.ui.controller import STRIP_KEY, SubagentUiController

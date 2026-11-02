@@ -23,15 +23,16 @@ click still works with no focus (:meth:`on_click`).
 from __future__ import annotations
 
 import time
-from typing import TYPE_CHECKING, Callable
+from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 from rich.console import Group
 from rich.text import Text
 from textual.widgets import Static
 
 if TYPE_CHECKING:
-    from textual import events
     from tau_coding.tui.config import TuiTheme
+    from textual import events
 
     from ..extension import AgentRun, SubagentManager
 

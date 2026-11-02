@@ -13,9 +13,10 @@ built-in tool names, or `*`), `model`, `thinking` (a Tau thinking level),
 
 Children discover skills natively through Tau's own machinery by default.
 `skills: <csv>` additionally preloads the named skills' bodies into the
-system prompt; `skills: true`/`*`/`all` pins resource discovery (skills and
-project context files) to the parent cwd, which only matters under worktree
-isolation; `skills: none`/`false` disables skill discovery entirely.
+system prompt; `skills: true`/`*`/`all` gives the child the skill index of the *parent* cwd —
+resolved here, because Tau rewrites a child's resource plan to the child's own
+cwd — which only matters under worktree isolation;
+`skills: none`/`false` disables skill discovery entirely.
 """
 
 from __future__ import annotations
@@ -159,7 +160,7 @@ def _parse_skills(raw: str | None) -> tuple[str, ...] | bool | None:
     """Parse `skills:` into four states.
 
     None = omitted (Tau's native discovery, default); tuple = named preload;
-    True (`true`/`*`/`all`) = pin discovery to the parent cwd; False
+    True (`true`/`*`/`all`) = the parent cwd's skill index; False
     (`none`/`false`) = disable skill discovery.
     """
     if raw is None:

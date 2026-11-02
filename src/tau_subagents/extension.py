@@ -55,8 +55,8 @@ from .output_file import OutputFileWriter, output_file_path, sweep_transcripts
 from .prompts import (
     build_child_system_prompt,
     build_parent_context,
+    build_pinned_skill_index,
     detect_environment,
-    inherited_resource_paths,
     resolve_skill_blocks,
 )
 from .schedule import SubagentScheduler
@@ -253,6 +253,17 @@ class SubagentManager:
         if self._settings is None:
             self._settings = load_subagent_settings(self._api.context.cwd)
         return self._settings
+
+    def _parent_project_trusted(self) -> bool:
+        """The parent session's project-input trust decision.
+
+        Reads through the live context so a stale generation cannot leak an
+        old verdict; an unreadable context keeps children untrusted.
+        """
+        try:
+            return bool(self._api.context.project_trusted)
+        except Exception:  # noqa: BLE001 - retired/unbound generation
+            return False
 
     def spawn(
         self,
@@ -629,6 +640,18 @@ class SubagentManager:
                 definition.skills if isinstance(definition.skills, tuple) else None,
                 cwd,
             )
+            skill_index = ""
+            if definition.skills is True:
+                # `skills: true` pins discovery to the PARENT cwd, which
+                # matters under worktree isolation. Tau 0.4+ rewrites a
+                # supplied resource plan's cwd to the session's own
+                # (`resource_paths_with_cwd` is destination-bound), so the
+                # pin can no longer be expressed through
+                # `CodingSessionConfig.resource_paths`. We read the parent's
+                # skills ourselves and hand the child Tau's own
+                # `<available_skills>` block with native discovery off.
+                skill_index = build_pinned_skill_index(cwd)
+                extra_config["skills_enabled"] = False
             if definition.memory is not None:
                 memory_rw = definition.tools is None or bool(
                     {"write", "edit"} & set(definition.tools)
@@ -651,6 +674,7 @@ class SubagentManager:
                 environment=environment,
                 skill_blocks=skill_blocks,
                 memory_block=memory_block,
+                skill_index=skill_index,
             )
             append_active = definition.prompt_mode == "append" and bool(parent_prompt)
             # skills: none/false disables skill discovery; a named CSV also
@@ -658,6 +682,12 @@ class SubagentManager:
             # (pi sets noSkills for both).
             if definition.skills is False or isinstance(definition.skills, tuple):
                 extra_config["skills_enabled"] = False
+        allowed_tool_names: frozenset[str] | None = None
+        if definition.tools is not None:
+            allowed = set(definition.tools)
+            if memory_block is not None:
+                allowed |= {"read", "write", "edit"} if memory_rw else {"read"}
+            allowed_tool_names = frozenset(allowed)
         session = await CodingSession.load(
             CodingSessionConfig(
                 provider=provider,
@@ -667,16 +697,25 @@ class SubagentManager:
                 system=prompt_text if append_active else None,
                 custom_system_prompt=None if append_active else prompt_text,
                 # Children always discover skills natively (Tau defaults
-                # resource paths from the session cwd). skills: true pins
-                # discovery to the PARENT cwd, which matters under worktree
-                # isolation where the default would use the worktree copy.
-                resource_paths=(
-                    inherited_resource_paths(cwd)
-                    if definition.skills is True
-                    else None
-                ),
+                # resource paths from the session cwd), except for
+                # `skills: true`, whose skill index comes from the parent cwd
+                # and is built extension-side above.
                 provider_name=selection.provider.name,
                 auto_compact_enabled=False,
+                # Forward the parent's project-input trust decision (Tau's
+                # child-session seam). A headless child resolves trust on its
+                # own and lands untrusted, which silently drops the project's
+                # skills, AGENTS.md, and project context files from its prompt.
+                # Never "approve" unconditionally: that reopens the hole the
+                # host's trust gate exists to close for declined repos.
+                trust_override=(
+                    "approve" if self._parent_project_trusted() else "decline"
+                ),
+                # Scoped tool gating through the supported seam. The old
+                # post-load mutation of session._harness.config.tools achieved
+                # the same pool here, but Tau's child-session note documents it
+                # as unsupported: _reload discards it when it recomposes tools.
+                allowed_tool_names=allowed_tool_names,
                 # Children load extensions natively (pi parity), so subagents
                 # can spawn subagents and a fork's tool pool matches the
                 # parent's (shared prompt cache). `isolated: true` opts a
@@ -693,13 +732,6 @@ class SubagentManager:
             definition.max_turns, run.requested_max_turns, settings.default_max_turns
         )
         run.grace_turns = settings.grace_turns
-        if definition.tools is not None:
-            allowed = set(definition.tools)
-            if memory_block is not None:
-                allowed |= {"read", "write", "edit"} if memory_rw else {"read"}
-            session._harness.config.tools = [  # noqa: SLF001 - scoped tool gating
-                tool for tool in session._harness.config.tools if tool.name in allowed
-            ]
         final_text: list[str] = []
         async for event in session.prompt(run.prompt):
             self._observe(run, event, final_text)

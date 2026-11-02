@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 
 from tau_coding import TauResourcePaths
 from tau_coding.skills import Skill, format_skill_invocation, load_skills
+from tau_coding.system_prompt import format_skills_for_prompt
 
 if TYPE_CHECKING:
     from .agents import AgentDefinition
@@ -87,9 +88,32 @@ def load_available_skills(cwd: Path, home: Path | None = None) -> list[Skill]:
 
 
 def inherited_resource_paths(cwd: Path, home: Path | None = None) -> TauResourcePaths:
-    """Resource paths for a child that inherits skills natively (skills: true)."""
+    """Resource plan used to read skills from `cwd` ourselves.
+
+    Only used for extension-side loading (`skills: <csv>` preloads and the
+    `skills: true` index). Tau 0.4+ rewrites any `resource_paths` handed to
+    `CodingSessionConfig` — `resource_paths_with_cwd` treats a plan as
+    destination-bound and replaces its `cwd` with the session's, so a child can
+    no longer pin discovery to another directory. `skills: true` therefore
+    resolves the parent's skills here and renders Tau's own index block into the
+    child prompt instead (see `build_pinned_skill_index`).
+    """
     home_dir = home if home is not None else Path.home()
     return TauResourcePaths(root=home_dir / ".tau", cwd=cwd)
+
+
+def build_pinned_skill_index(cwd: Path, home: Path | None = None) -> str:
+    """Tau's `<available_skills>` block for the skills visible from `cwd`.
+
+    Used for `skills: true`: the child runs with `skills_enabled=False` and
+    carries this block instead, which keeps worktree-isolated children seeing
+    the parent's (possibly uncommitted) skills.
+    """
+    try:
+        skills = load_skills(inherited_resource_paths(cwd, home))
+    except Exception:  # noqa: BLE001 - unreadable skill dirs degrade to no index
+        return ""
+    return format_skills_for_prompt(skills).strip()
 
 
 def resolve_skill_blocks(
@@ -119,6 +143,7 @@ def build_child_system_prompt(
     environment: str,
     skill_blocks: list[tuple[str, str]],
     memory_block: str | None = None,
+    skill_index: str = "",
 ) -> str | None:
     """Assemble the child system prompt for one agent definition.
 
@@ -142,6 +167,8 @@ def build_child_system_prompt(
         extras.extend(
             f"\n# Preloaded Skill: {name}\n{block}" for name, block in skill_blocks
         )
+        if skill_index:
+            extras.append(skill_index)
         extras_suffix = "\n\n" + "\n".join(extras) if extras else ""
         return (
             f"{parent_prompt}\n\n{SUB_AGENT_BRIDGE}\n\n"
@@ -154,6 +181,8 @@ def build_child_system_prompt(
     if memory_block:
         parts.append(memory_block)
     parts.extend(f"# Preloaded Skill: {name}\n{block}" for name, block in skill_blocks)
+    if skill_index:
+        parts.append(skill_index)
     return "\n\n".join(parts) if parts else None
 
 

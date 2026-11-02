@@ -23,9 +23,16 @@ classifiers = [
 keywords = ["tau", "subagents", "extension", "agents", "tui"]
 # textual is a direct dependency: the extension's agents strip and
 # conversation viewer are real Textual widgets mounted through tau's component
-# seam. The floor matches tau-ai 0.3.0's own textual requirement.
+# seam. The floor matches tau-ai 0.4.8's own textual requirement.
+#
+# The tau-ai floor is a compatibility floor, not a preference: 0.4.8 is the
+# first release that exposes ExtensionContext.project_trusted (the parent's
+# project-input trust decision), which children must inherit, and
+# CodingSessionConfig.allowed_tool_names. The project-resource trust gate that
+# made children lose project skills/AGENTS.md landed in 0.3.7, so older
+# releases are not a working target either.
 dependencies = [
- "tau-ai>=0.3.0",
+ "tau-ai>=0.4.8",
  "textual>=8.2.8",
 ]
 
@@ -35,7 +42,7 @@ Repository = "https://github.com/rian-dolphin/tau-subagents"
 Issues = "https://github.com/rian-dolphin/tau-subagents/issues"
 
 [dependency-groups]
-dev = ["pytest>=8.0", "anyio>=4.0"]
+dev = ["pytest>=8.0", "anyio>=4.0", "ruff>=0.9"]
 
 # Tau extension manifest (ported from pi's package.json "pi.extensions"):
 # lets `tau -e` on this repo root find the entry inside the src layout, no
@@ -45,3 +52,11 @@ extensions = ["src/tau_subagents/extension.py"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+src = ["src", "tests"]
+line-length = 88
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "B", "UP"]

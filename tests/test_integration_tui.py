@@ -20,16 +20,13 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from textual.containers import Container
-
 from tau_agent import (
-    ToolCall,
     ToolExecutionEndEvent,
     ToolExecutionStartEvent,
 )
-from tau_coding.events import QueueUpdateEvent
 from tau_agent.messages import AssistantMessage
 from tau_ai import AssistantDoneEvent, AssistantStartEvent, FakeProvider
+from tau_coding.events import QueueUpdateEvent
 from tau_coding.session import ModelChoice, TerminalCommandResult
 from tau_coding.session_stats import SessionStats
 from tau_coding.skills import Skill
@@ -37,6 +34,7 @@ from tau_coding.system_prompt import ProjectContextFile
 from tau_coding.tools import create_coding_tools
 from tau_coding.tui.app import PromptInput, TauTuiApp
 from tau_coding.tui.widgets import TranscriptMessageWidget, TranscriptView
+from textual.containers import Container
 
 from tau_subagents.ui.strip import AgentStripWidget
 from tau_subagents.ui.viewer import ConversationViewer
@@ -96,6 +94,9 @@ class _FakeSession:
             ProjectContextFile(path=str(cwd / "AGENTS.md"), content="Rules."),
         )
         self.context_token_estimate = 100
+        # Read by tau's sidebar fingerprint (tui/widgets._session_summary_fingerprint).
+        self.has_provider_context_usage = False
+        self.system_prompt_files: tuple[object, ...] = ()
         self.auto_compact_token_threshold = 200000
         self.context_window_tokens = 216384
         self.thinking_level = "medium"
@@ -241,7 +242,9 @@ class _GatedProvider:
     def __init__(self, release: asyncio.Event) -> None:
         self._release = release
 
-    def stream_response(self, *, model, system, messages, tools, signal=None):  # noqa: ANN001, ANN202
+    def stream_response(  # noqa: ANN001, ANN202
+        self, *, model, system, messages, tools, signal=None, session_id=None
+    ):
         async def iterator():  # noqa: ANN202
             await self._release.wait()
             yield AssistantStartEvent(partial=AssistantMessage(model="fake"))

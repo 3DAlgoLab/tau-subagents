@@ -19,3 +19,34 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Run tests
         run: uv run pytest
+
+  # A locked `uv run pytest` only ever proves that the pinned Tau works, which
+  # is how this extension stayed green against 0.3.5 while every release since
+  # 0.3.7 was broken (ADR 0006). This job resolves the newest tau-ai so upstream
+  # API drift fails the PR that hits it.
+  latest-tau:
+    name: Tests against the newest tau-ai
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v9.0.0
+        with:
+          python-version: "3.13"
+      - name: Install with the newest tau-ai
+        run: |
+          uv venv
+          uv pip install -e . pytest anyio
+          uv pip install --upgrade tau-ai
+      - name: Report the Tau version under test
+        run: |
+          uv run --no-sync python -c "import importlib.metadata as m; print('tau-ai', m.version('tau-ai'))"
+      - name: Run tests
+        run: uv run --no-sync pytest
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v9.0.0
+      - name: Ruff
+        run: uv run ruff check src tests

@@ -3,12 +3,16 @@
 Claude Code-style autonomous subagents for [Tau](https://github.com/huggingface/tau),
 ported from [pi-subagents](https://github.com/tintinweb/pi-subagents).
 
-> **Requires upstream tau-ai ≥ 0.3.0.** Upstream tau adopted pi's event and
+> **Requires upstream tau-ai ≥ 0.4.8.** Upstream tau adopted pi's event and
 > extension protocol wholesale (tau #375), so everything this extension needs
 > — the extension API, the component seam, dialogs, message renderers, the
 > `skills_enabled` config, provider usage fields — is present in every
-> supported Tau. Older 0.2.x releases (and the pre-0.2.0 fork branches) are no
-> longer supported.
+> supported Tau. The floor sits above that baseline for two reasons: a child
+> must inherit the parent's project-input trust decision, which tau exposes to
+> extensions only from 0.4.8, and tau 0.3.7 introduced the trust gate that
+> silently strips a child's project skills and `AGENTS.md` when it is not
+> forwarded. Releases between 0.3.7 and 0.4.7 are therefore broken for
+> subagents, and 0.2.x/0.3.x are unsupported (see `dev-notes/adr/0006`).
 
 Gives the model an `agent` tool that delegates a task to a **subagent** — a
 second, scoped Tau coding session running in-process with its own system
@@ -192,10 +196,8 @@ Notes:
   prefix bills as input on the fork's first turn.
 - Provider, model, and thinking level are snapshotted at the tool call, so
   a queued fork runs what the parent had when it forked even if the parent
-  switches `/model` or thinking level before the fork starts. On tau-ai
-  < 0.4.0 the live thinking level is not exposed to extensions; the fork
-  then passes no override and the provider's persisted per-model level
-  applies.
+  switches `/model` or thinking level before the fork starts. The supported
+  tau floor (0.4.8) always exposes the live thinking level to extensions.
 - The fork's output file records only its own messages
   (`inheritedMessages: N` marks the seeded prefix).
 
@@ -291,12 +293,15 @@ that:
   such agents (matching pi, which sets `noSkills` for named preloads so the
   same skill isn't both preloaded and indexed) — the child gets exactly the
   named skills.
-- `skills: true` (or `*` / `all`) — pins the child's resource discovery
-  (skills **and** project context files such as AGENTS.md) to the **parent**
-  working directory. This only makes a difference under
-  `isolation: worktree`, where default discovery would otherwise resolve
-  against the worktree copy — e.g. uncommitted project skills would be
-  invisible to the isolated child.
+- `skills: true` (or `*` / `all`) — gives the child the skill index of the
+  **parent** working directory. tau treats a child's resource plan as
+  destination-bound and rewrites it to the child's own cwd, so this extension
+  resolves the parent's skills itself and hands the child tau's own
+  `<available_skills>` block with native discovery off. This only makes a
+  difference under `isolation: worktree`, where default discovery would
+  otherwise resolve against the worktree copy — e.g. uncommitted project
+  skills would be invisible to the isolated child. Project context files such
+  as AGENTS.md always resolve against the child's own cwd.
 - `skills: none` / `false` — disables the child's skill discovery entirely
   (no `<available_skills>` index, no `/skill:` expansion).
 

@@ -20,11 +20,11 @@ thread and is safe (see the design's push-refresh invariant).
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Callable
+from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 from rich.text import Text
-from textual.containers import Vertical
-from textual.widgets import Input, Static
+from tau_agent.messages import UserMessage
 
 # Host-internal rendering reuse (the measured coupling): the viewer renders an
 # agent's conversation through the very same state + transcript widget the host
@@ -32,17 +32,17 @@ from textual.widgets import Input, Static
 from tau_coding.tui.config import TuiKeybindings
 from tau_coding.tui.state import TuiState
 from tau_coding.tui.widgets import TranscriptView
-
-from tau_agent.messages import UserMessage
+from textual.containers import Vertical
+from textual.widgets import Input, Static
 
 from ..agents_menu import run_snapshot_messages, steer_run, stop_run
 
 if TYPE_CHECKING:
-    from textual import events
+    from tau_coding.extensions import MainViewHandle
     from tau_coding.tui.config import TuiTheme
+    from textual import events
 
     from ..extension import AgentRun, SubagentManager
-    from tau_coding.extensions import MainViewHandle
 
 ACTIVE_STATUSES = ("running", "queued")
 

@@ -13,8 +13,13 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
-from tau_agent.messages import AssistantMessage, TextContent, ToolCall, Usage, UserMessage
+from tau_agent.messages import (
+    AssistantMessage,
+    TextContent,
+    ToolCall,
+    Usage,
+    UserMessage,
+)
 from tau_ai import (
     AssistantDoneEvent,
     AssistantErrorEvent,
@@ -23,6 +28,7 @@ from tau_ai import (
 )
 from tau_coding import TauResourcePaths
 from tau_coding.extensions import ExtensionRuntime
+from tau_coding.project_trust import ProjectTrustResolution
 
 pytestmark = pytest.mark.anyio
 
@@ -45,13 +51,20 @@ def _paths(tmp_path: Path) -> TauResourcePaths:
 class RecordingSession:
     """Minimal BoundSession implementation for runtime tests."""
 
-    def __init__(self, tmp_path: Path, *, running: bool = False) -> None:
+    def __init__(
+        self, tmp_path: Path, *, running: bool = False, trusted: bool = True
+    ) -> None:
         self.cwd = tmp_path
         self.model = "fake"
         self.provider_name = "fake"
         self.session_id = "session-1"
         self.system_prompt = "You are Tau."
         self.is_running = running
+        # Parents resolve project inputs; children must inherit this verdict
+        # (trust_override) rather than re-resolving headlessly as untrusted.
+        self.project_trust_resolution = ProjectTrustResolution(
+            trusted=trusted, source="override"
+        )
         self.steered: list[str] = []
         self.followed_up: list[str] = []
         self.custom_entries: list[tuple[str, dict[str, object]]] = []
@@ -189,7 +202,9 @@ class BlockingProvider:
         self._text = text
         self.calls: list[object] = []
 
-    def stream_response(self, *, model, system, messages, tools, signal=None):  # noqa: ANN001, ANN202
+    def stream_response(  # noqa: ANN001, ANN202
+        self, *, model, system, messages, tools, signal=None, session_id=None
+    ):
         self.calls.append(list(messages))
 
         async def iterator():  # noqa: ANN202
@@ -509,9 +524,11 @@ async def test_max_turns_grace_abort(tmp_path: Path) -> None:
     # ("Provider produced no assistant message"), so the counter reads 3 —
     # still far below the 6 turns the provider offered.
     assert "turns=3" in result.text
-    # Two real provider calls, plus the post-cancel call the provider answers
-    # with an empty (cancelled) stream.
-    assert len(provider.calls) == 3
+    # The run stops early instead of burning the 6 turns the provider offered.
+    # Two real provider calls plus, on tau-ai <=0.4.8, one extra call answered
+    # with an empty (cancelled) stream; 0.4.9+ short-circuits a request that
+    # would begin after a cancel, so the count is 2 or 3 by release.
+    assert len(provider.calls) in (2, 3)
 
 
 async def test_resume_continues_session(tmp_path: Path) -> None:
@@ -830,6 +847,7 @@ async def test_spawn_injects_skills_and_append_prompt(tmp_path: Path) -> None:
         "call-1",
         {"prompt": "go", "description": "go", "subagent_type": "skilled"}
     )
+    assert result.text.endswith("done")
     system = provider.calls[0][1]
     assert system.startswith("You are Tau.\n\n<sub_agent_context>")
     assert "<agent_instructions>\nUse the skill.\n</agent_instructions>" in system
@@ -926,6 +944,7 @@ async def test_worktree_isolation_runs_child_in_worktree(tmp_path: Path) -> None
         "call-1",
         {"prompt": "where am I", "description": "where", "isolation": "worktree"}
     )
+    assert result.text.endswith("done")
     assert "tau-agent-agent-1" in str(provider.calls[1][2])  # pwd ran in the worktree
     assert "tau-agent" not in _git_stdout(["worktree", "list"], repo)
     assert _git_stdout(["branch", "--list", "tau-agent-agent-1"], repo).strip() == ""
@@ -971,6 +990,7 @@ async def test_resume_blocked_for_worktree_agents(tmp_path: Path) -> None:
         "call-1",
         {"prompt": "x", "description": "x", "isolation": "worktree"}
     )
+    assert "done" in first.text
 
     resumed = await agent_tool.execute("call-1", {"resume": "agent-1", "prompt": "more"})
     assert (
@@ -1441,10 +1461,12 @@ async def test_skills_true_pins_discovery_to_parent_cwd_under_worktree(
         "call-1",
         {"prompt": "go", "description": "go", "subagent_type": "pinned"}
     )
+    assert pinned.text.endswith("done")
     unpinned = await agent_tool.execute(
         "call-1",
         {"prompt": "go", "description": "go", "subagent_type": "unpinned"}
     )
+    assert unpinned.text.endswith("done")
     pinned_system = pinned_provider.calls[0][1]
     unpinned_system = unpinned_provider.calls[0][1]
     # skills: true resolves resources against the parent cwd, so the child
@@ -1473,15 +1495,91 @@ async def test_skills_none_disables_native_discovery(tmp_path: Path) -> None:
 
     agent_tool = _agent_tool(runtime)
     control = await agent_tool.execute("call-1", {"prompt": "x", "description": "x"})
+    assert control.text.endswith("done")
     noskills = await agent_tool.execute(
         "call-1",
         {"prompt": "x", "description": "x", "subagent_type": "noskills"}
     )
+    assert noskills.text.endswith("done")
     control_system = control_provider.calls[0][1]
     assert "<name>idxskill</name>" in control_system  # omitted => native discovery
     noskills_system = noskills_provider.calls[0][1]
     assert "<available_skills>" not in noskills_system
     assert "idxskill" not in noskills_system
+
+
+def _capture_child_configs(monkeypatch: pytest.MonkeyPatch) -> list[object]:
+    """Record every `CodingSessionConfig` the extension builds for a child."""
+    from tau_coding import CodingSession
+
+    seen: list[object] = []
+    real_load = CodingSession.load
+
+    async def spy_load(config):  # noqa: ANN001, ANN202
+        seen.append(config)
+        return await real_load(config)
+
+    monkeypatch.setattr(CodingSession, "load", staticmethod(spy_load))
+    return seen
+
+
+async def test_children_inherit_the_parent_project_trust_decision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The parent's project-input verdict must reach the child (tau #541).
+
+    A headless child resolves trust on its own and lands untrusted, which
+    silently drops the project's skills, `AGENTS.md`, and project extensions
+    from its prompt. Forwarding `trust_override` is the supported seam, and a
+    blind `"approve"` would reopen the hole the gate exists to close.
+    """
+    configs = _capture_child_configs(monkeypatch)
+    runtime = _load_runtime(tmp_path)
+    parent = RecordingSession(tmp_path)
+    runtime.bind(parent)
+    module = _extension_module()
+    _patch_provider_sequence(
+        module, [FakeProvider([_text_stream("done")]) for _ in range(2)]
+    )
+    agent_tool = _agent_tool(runtime)
+
+    await agent_tool.execute("call-1", {"prompt": "t", "description": "d"})
+    assert configs[0].trust_override == "approve"
+
+    parent.project_trust_resolution = ProjectTrustResolution(
+        trusted=False, source="override"
+    )
+    await agent_tool.execute("call-2", {"prompt": "t", "description": "d"})
+    assert configs[1].trust_override == "decline"
+
+
+async def test_definition_tools_gate_the_child_tool_pool(
+    tmp_path: Path, _isolate_home: Path
+) -> None:
+    """`tools:` frontmatter narrows the child's pool to the named tools only.
+
+    Children load extensions, so this also pins that an agent declared read-only
+    cannot reach tools that extensions contribute to the composed pool.
+    """
+    extensions_dir = _isolate_home / ".tau" / "extensions"
+    extensions_dir.mkdir(parents=True)
+    (extensions_dir / "tau-subagents").symlink_to(EXTENSION_DIR)
+
+    (tmp_path / ".tau" / "agents").mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".tau" / "agents" / "readonly.md").write_text(
+        "---\ndescription: Read only\ntools: read\n---\nBody."
+    )
+    runtime = _load_runtime(tmp_path)
+    runtime.bind(RecordingSession(tmp_path))
+    module = _extension_module()
+    provider = CapturingProvider([_text_stream("done")])
+    _patch_provider_sequence(module, [provider])
+
+    await _agent_tool(runtime).execute(
+        "call-1", {"prompt": "t", "description": "d", "subagent_type": "readonly"}
+    )
+    names = {tool.name for tool in provider.calls[0]["tools"]}
+    assert names == {"read"}
 
 
 async def test_named_skills_preload_disables_native_index(tmp_path: Path) -> None:
@@ -1504,6 +1602,7 @@ async def test_named_skills_preload_disables_native_index(tmp_path: Path) -> Non
         "call-1",
         {"prompt": "x", "description": "x", "subagent_type": "preloader"}
     )
+    assert result.text.endswith("done")
     system = provider.calls[0][1]
     assert "# Preloaded Skill: idxskill" in system
     assert "<available_skills>" not in system  # pi: named preload sets noSkills
@@ -1674,6 +1773,7 @@ async def test_foreground_run_emits_live_stats_ticker(tmp_path: Path) -> None:
         on_update=lambda partial: updates.append(partial.text),
     )
     assert updates, "foreground run should stream the live stats ticker"
+    assert result.text.endswith("Final answer")
     assert "1 tool use" in updates
     assert updates[-1] == "2 turns · 1 tool use"
     # Cumulative and deduplicated: every emission differs from the previous.
@@ -1698,6 +1798,7 @@ async def test_inherit_context_prepends_parent_conversation(tmp_path: Path) -> N
         "call-1",
         {"prompt": "child task", "description": "d", "inherit_context": True}
     )
+    assert result.text.endswith("done")
     child_messages = provider.calls[0][2]
     first = child_messages[0]
     assert first.text.startswith("# Parent Conversation Context")
@@ -2337,7 +2438,9 @@ class CapturingProvider:
         self._streams = iter(streams)
         self.calls: list[dict[str, object]] = []
 
-    def stream_response(self, *, model, system, messages, tools, signal=None):  # noqa: ANN001, ANN202
+    def stream_response(  # noqa: ANN001, ANN202
+        self, *, model, system, messages, tools, signal=None, session_id=None
+    ):
         self.calls.append(
             {"system": system, "messages": list(messages), "tools": list(tools or ())}
         )

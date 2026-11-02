@@ -12,15 +12,16 @@ the widgets it mounts.
 from __future__ import annotations
 
 import contextlib
-from typing import TYPE_CHECKING, Callable
+from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 from .strip import AgentStripWidget
 from .viewer import ConversationViewer
 
 if TYPE_CHECKING:
-    from textual import events
     from tau_coding.extensions import ComponentBridge
     from tau_coding.tui.config import TuiTheme
+    from textual import events
 
     from ..extension import AgentRun, SubagentManager
 
