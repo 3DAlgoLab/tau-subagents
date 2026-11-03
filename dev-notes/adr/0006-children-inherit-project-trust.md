@@ -12,9 +12,25 @@ for its cwd. A headless child resolves that decision on its own and lands on
 `project_resources_enabled=False`. The child loses the project's skills, the
 project's AGENTS.md, and the project's extensions.
 
-This extension built every child without `trust_override`. So every subagent in
-an approved repository lost those resources. Nothing failed loudly. The child's
-prompt was simply smaller.
+This extension built every child without `trust_override`, so each child
+resolved trust for its own cwd. What that costs depends on whether a saved
+decision covers that cwd:
+
+- A normal (non-isolated) child runs in the parent's cwd. The parent's approval
+  is persisted in `<tau home>/trust.json`, and a saved decision for an ancestor
+  path covers the child, so the child resolves trusted on its own.
+- An `isolation: worktree` child runs in `$TMPDIR/tau-agent-<id>-<hex>`, which no
+  saved decision covers. There the child resolves untrusted and its prompt loses
+  the project's skills and AGENTS.md.
+- A non-isolated child also loses them when the parent's approval is not in the
+  store: a session-scoped approval, or a decision that was later removed.
+
+Measured on tau 0.4.9b3, in this repository, with one probe project skill
+committed and `--no-extensions -e <checkout>` so only that build was loaded: the
+pre-port build `f2a8b4b` showed an isolated child only the user skill, and the
+ported build `a10d9f9` showed it both skills. For a non-isolated child both
+builds showed both skills, because the stored approval covers the shared cwd.
+Nothing failed loudly in any of these cases. The child's prompt was smaller.
 
 Two facts hid this from us:
 
@@ -34,10 +50,13 @@ stream. One test counted those calls, so its expectation moved from 3 to 2.
 
 ## Decision
 
-Read `context.project_trusted` when a child spawns. Pass it as
-`trust_override="approve"` when it is true, and `"decline"` when it is false.
-Never pass `"approve"` unconditionally: that reopens the hole the host's gate
-exists to close.
+Forward the parent's verdict through the documented child-session seam: read
+`context.project_trusted` when a child spawns, and pass `trust_override="approve"`
+when it is true, `"decline"` when it is false. Never pass `"approve"`
+unconditionally: that reopens the hole the host's gate exists to close. For a
+child that shares the parent's cwd the override usually changes nothing, because
+the store already answers for that path; it also makes the inheritance explicit
+instead of a side effect of `trust.json` state.
 
 Raise the dependency floor to `tau-ai>=0.4.8`. That release exposes
 `context.project_trusted` and `CodingSessionConfig.allowed_tool_names`. Older
@@ -61,8 +80,9 @@ Running the repository's code inside a child is a separate decision.
 
 ## Consequences
 
-Children in an approved repository see the project's skills and its AGENTS.md.
-Children in a declined repository behave as before.
+Isolated children now see the project's skills and its AGENTS.md. Non-isolated
+children saw them before whenever a stored decision covered the shared cwd, and
+still do not see them when the parent's approval is session-scoped.
 
 Child prompts change for `skills: true`. The skills block now sits in the tail
 of the assembled prompt, not in Tau's native position, so such a child no

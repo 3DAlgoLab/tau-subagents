@@ -10,9 +10,10 @@ ported from [pi-subagents](https://github.com/tintinweb/pi-subagents).
 > supported Tau. The floor sits above that baseline for two reasons: a child
 > must inherit the parent's project-input trust decision, which tau exposes to
 > extensions only from 0.4.8, and tau 0.3.7 introduced the trust gate that
-> silently strips a child's project skills and `AGENTS.md` when it is not
-> forwarded. Releases between 0.3.7 and 0.4.7 are therefore broken for
-> subagents, and 0.2.x/0.3.x are unsupported (see `dev-notes/adr/0006`).
+> strips project skills and `AGENTS.md` from any child whose cwd has no saved
+> trust decision covering it — every `isolation: worktree` child among them.
+> Releases between 0.3.7 and 0.4.7 therefore mishandle isolated subagents, and
+> 0.2.x/0.3.x are unsupported (see `dev-notes/adr/0006`).
 
 Gives the model an `agent` tool that delegates a task to a **subagent** — a
 second, scoped Tau coding session running in-process with its own system
